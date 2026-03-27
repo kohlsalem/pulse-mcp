@@ -1,10 +1,17 @@
 """Pulse MCP Server -- tools for monitoring and managing a Pulse instance."""
 
+import base64
 import json
 import logging
+import os
+import secrets
 import sys
 
+import uvicorn
 from mcp.server.fastmcp import FastMCP
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 
 from pulse_mcp.client import PulseClient
 
@@ -375,8 +382,61 @@ async def update_system_settings(settings_json: str) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 
+class BasicAuthMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, username: str, password: str) -> None:
+        super().__init__(app)
+        self._username = username
+        self._password = password
+
+    async def dispatch(self, request: Request, call_next):
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Basic "):
+            return Response(
+                "Unauthorized",
+                status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="pulse-mcp"'},
+            )
+        try:
+            decoded = base64.b64decode(auth[6:]).decode()
+            username, _, password = decoded.partition(":")
+        except Exception:
+            return Response(
+                "Unauthorized",
+                status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="pulse-mcp"'},
+            )
+        valid = secrets.compare_digest(username, self._username) and secrets.compare_digest(
+            password, self._password
+        )
+        if not valid:
+            return Response(
+                "Unauthorized",
+                status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="pulse-mcp"'},
+            )
+        return await call_next(request)
+
+
+def make_http_app():
+    """Build the Starlette app with BasicAuthMiddleware. Exits if credentials not configured."""
+    username = os.environ.get("MCP_USERNAME", "")
+    password = os.environ.get("MCP_PASSWORD", "")
+    if not username or not password:
+        logger.error("MCP_USERNAME and MCP_PASSWORD must be set when using HTTP transport")
+        raise SystemExit(1)
+    app = mcp.streamable_http_app()
+    return BasicAuthMiddleware(app, username=username, password=password)
+
+
 def main():
-    mcp.run(transport="stdio")
+    transport = os.environ.get("MCP_TRANSPORT", "stdio")
+    if transport == "stdio":
+        mcp.run(transport="stdio")
+    else:
+        host = os.environ.get("MCP_HOST", "0.0.0.0")
+        port = int(os.environ.get("MCP_PORT", "8000"))
+        app = make_http_app()
+        uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":
