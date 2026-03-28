@@ -1,0 +1,10 @@
+.env
+.git
+.gitignore
+.python-version
+__pycache__
+*.pyc
+*.pyo
+docs/
+README.md
+tests/
